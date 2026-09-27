@@ -2,10 +2,10 @@
 import { computed, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
-import type { Domain, StudyPlan, StudyResource } from '@/types'
+import type { Domain, PlanMilestone, StudyPlan, StudyResource } from '@/types'
 import { DOMAINS } from '@/constants'
-import { computePlanProgress } from '@/utils/progress'
-import { today } from '@/utils/date'
+import { computePlanProgress, milestonePosition } from '@/utils/progress'
+import { shortLabel, today } from '@/utils/date'
 import { uid } from '@/utils/id'
 import { useLogsStore } from '@/stores/logs'
 import { usePlansStore } from '@/stores/plans'
@@ -16,6 +16,10 @@ const logsStore = useLogsStore()
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
 const formRef = ref<FormInstance>()
+const todayKey = today()
+
+/** 弹窗内的里程碑草稿（保存时按名称过滤） */
+type MilestoneDraft = Pick<PlanMilestone, 'id' | 'name' | 'targetDate'>
 
 const emptyForm = (): {
   name: string
@@ -26,6 +30,7 @@ const emptyForm = (): {
   totalHours: number
   dailyHours: number
   resources: StudyResource[]
+  milestones: MilestoneDraft[]
 } => ({
   name: '',
   domain: '编程',
@@ -35,6 +40,7 @@ const emptyForm = (): {
   totalHours: 100,
   dailyHours: 2,
   resources: [],
+  milestones: [],
 })
 
 const form = reactive(emptyForm())
@@ -78,6 +84,11 @@ function openEdit(plan: StudyPlan): void {
     totalHours: plan.totalHours,
     dailyHours: plan.dailyHours,
     resources: plan.resources.map((r) => ({ ...r })),
+    milestones: plan.milestones.map((m) => ({
+      id: m.id,
+      name: m.name,
+      targetDate: m.targetDate,
+    })),
   })
   dialogVisible.value = true
 }
@@ -90,9 +101,22 @@ function removeResource(index: number): void {
   form.resources.splice(index, 1)
 }
 
+function addMilestone(): void {
+  form.milestones.push({ id: uid(), name: '', targetDate: '' })
+}
+
+function removeMilestone(index: number): void {
+  form.milestones.splice(index, 1)
+}
+
 async function save(): Promise<void> {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
+  const validDrafts = form.milestones.filter((m) => m.name.trim() !== '')
+  if (validDrafts.some((m) => !m.targetDate)) {
+    ElMessage.warning('请为每个里程碑选择目标日期')
+    return
+  }
   const payload = {
     name: form.name.trim(),
     domain: form.domain,
@@ -104,10 +128,28 @@ async function save(): Promise<void> {
     resources: form.resources.filter((r) => r.name.trim() !== ''),
   }
   if (editingId.value) {
-    plansStore.updatePlan(editingId.value, payload)
+    const existing = plansStore.plans.find((p) => p.id === editingId.value)
+    // 沿用草稿的稳定 id；编辑中保留的里程碑回填原完成状态
+    const milestones: PlanMilestone[] = validDrafts.map((draft) => {
+      const previous = existing?.milestones.find((m) => m.id === draft.id)
+      return {
+        id: draft.id,
+        name: draft.name.trim(),
+        targetDate: draft.targetDate,
+        ...(previous?.completedAt ? { completedAt: previous.completedAt } : {}),
+      }
+    })
+    plansStore.updatePlan(editingId.value, { ...payload, milestones })
     ElMessage.success('计划已更新')
   } else {
-    plansStore.addPlan(payload)
+    plansStore.addPlan({
+      ...payload,
+      milestones: validDrafts.map((draft) => ({
+        id: draft.id,
+        name: draft.name.trim(),
+        targetDate: draft.targetDate,
+      })),
+    })
     ElMessage.success('计划已创建')
   }
   dialogVisible.value = false
@@ -140,17 +182,56 @@ function removePlan(plan: StudyPlan): void {
 
         <p class="plan-goal">{{ plan.goal || '暂无目标描述' }}</p>
 
-        <el-progress
-          :percentage="progress.percent"
-          :status="progress.status === '已逾期' ? 'exception' : progress.status === '已完成' ? 'success' : undefined"
-          :stroke-width="12"
-        />
+        <div class="progress-row">
+          <div class="progress-wrap">
+            <el-progress
+              :percentage="progress.percent"
+              :show-text="false"
+              :status="progress.status === '已逾期' ? 'exception' : progress.status === '已完成' ? 'success' : undefined"
+              :stroke-width="12"
+            />
+            <el-tooltip
+              v-for="m in plan.milestones"
+              :key="m.id"
+              :content="`${m.name} · ${shortLabel(m.targetDate)}${m.completedAt ? '（已完成）' : ''}`"
+              placement="top"
+            >
+              <span
+                class="milestone-dot"
+                :class="{
+                  done: Boolean(m.completedAt),
+                  overdue: !m.completedAt && m.targetDate < todayKey,
+                }"
+                :style="{ left: `${milestonePosition(plan, m)}%` }"
+                @click="plansStore.toggleMilestone(plan.id, m.id)"
+              />
+            </el-tooltip>
+          </div>
+          <span class="progress-percent">{{ progress.percent }}%</span>
+        </div>
+
+        <ul v-if="plan.milestones.length" class="milestone-list">
+          <li
+            v-for="m in plan.milestones"
+            :key="m.id"
+            class="milestone-item"
+            :class="{ done: Boolean(m.completedAt) }"
+            @click="plansStore.toggleMilestone(plan.id, m.id)"
+          >
+            <span class="milestone-icon">{{ m.completedAt ? '✓' : '' }}</span>
+            <span class="milestone-name">{{ m.name }}</span>
+            <span class="milestone-date">{{ shortLabel(m.targetDate) }}</span>
+          </li>
+        </ul>
 
         <div class="plan-meta">
           <span>已过 {{ progress.elapsedDays }} 天</span>
           <span>剩余 {{ progress.remainingDays }} 天</span>
           <span>应完成 {{ progress.shouldHours }}h</span>
           <span>实际 {{ progress.actualHours }}h / {{ plan.totalHours }}h</span>
+          <span v-if="plan.milestones.length">
+            里程碑 {{ plan.milestones.filter((m) => m.completedAt).length }}/{{ plan.milestones.length }}
+          </span>
         </div>
 
         <div class="plan-resources" v-if="plan.resources.length">
@@ -188,7 +269,7 @@ function removePlan(plan: StudyPlan): void {
     <el-dialog
       v-model="dialogVisible"
       :title="editingId ? '编辑计划' : '新建计划'"
-      width="560px"
+      width="620px"
       destroy-on-close
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="96px">
@@ -224,6 +305,24 @@ function removePlan(plan: StudyPlan): void {
               <el-button type="danger" plain @click="removeResource(i)">删除</el-button>
             </div>
             <el-button type="primary" plain @click="addResource">+ 添加资源</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="里程碑">
+          <div class="resource-editor">
+            <div v-for="(m, i) in form.milestones" :key="m.id" class="resource-row">
+              <el-input v-model="m.name" placeholder="阶段节点，如：完成基础语法" />
+              <el-date-picker
+                v-model="m.targetDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="目标日期"
+                style="width: 150px"
+              />
+              <el-button type="danger" plain @click="removeMilestone(i)">删除</el-button>
+            </div>
+            <el-button type="primary" plain @click="addMilestone">+ 添加里程碑</el-button>
+            <span class="milestone-hint">里程碑按目标日期标注在进度条上，可单独标记完成</span>
           </div>
         </el-form-item>
       </el-form>
@@ -267,6 +366,120 @@ function removePlan(plan: StudyPlan): void {
   font-size: 13px;
   min-height: 36px;
   margin: 8px 0 12px;
+}
+
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-wrap {
+  position: relative;
+  flex: 1;
+}
+
+.progress-percent {
+  font-size: 12px;
+  color: #606266;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* 进度条上的里程碑标记：位置由目标日期在时间轴上的比例决定 */
+.milestone-dot {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #e6a23c;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  z-index: 1;
+  box-sizing: border-box;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.milestone-dot:hover {
+  box-shadow: 0 0 0 3px rgb(230 162 60 / 20%);
+}
+
+.milestone-dot.done {
+  background: #67c23a;
+  border-color: #67c23a;
+}
+
+.milestone-dot.overdue {
+  border-color: #f56c6c;
+}
+
+.milestone-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.milestone-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #606266;
+  background: #f4f4f5;
+  border-radius: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.milestone-item:hover {
+  background: #e9e9eb;
+}
+
+.milestone-item.done {
+  color: #67c23a;
+}
+
+.milestone-item.done .milestone-name {
+  text-decoration: line-through;
+}
+
+.milestone-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid #c0c4cc;
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.milestone-item.done .milestone-icon {
+  background: #67c23a;
+  border-color: #67c23a;
+  color: #fff;
+}
+
+.milestone-date {
+  color: #909399;
+}
+
+.milestone-item.done .milestone-date {
+  color: #67c23a;
+}
+
+.milestone-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .plan-meta {

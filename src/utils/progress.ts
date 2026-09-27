@@ -1,4 +1,4 @@
-import type { PlanProgress, StudyLog, StudyPlan } from '@/types'
+import type { PlanMilestone, PlanProgress, StudyLog, StudyPlan } from '@/types'
 import { daysBetween, today } from '@/utils/date'
 
 /**
@@ -50,4 +50,16 @@ export function computePlanProgress(plan: StudyPlan, logs: StudyLog[]): PlanProg
 /** 计划是否完成（供排行榜/成就判定复用） */
 export function isPlanCompleted(plan: StudyPlan, logs: StudyLog[]): boolean {
   return computePlanProgress(plan, logs).status === '已完成'
+}
+
+/**
+ * 里程碑在进度条上的位置（0-100），按开始/结束日期的时间轴线性计算。
+ * 与时长进度相互独立：里程碑完成不会改变 computePlanProgress 的结果。
+ * 日期超出计划区间时钳制到两端。
+ */
+export function milestonePosition(plan: StudyPlan, milestone: PlanMilestone): number {
+  const span = daysBetween(plan.startDate, plan.endDate)
+  if (span <= 0) return 0
+  const offset = daysBetween(plan.startDate, milestone.targetDate)
+  return Math.min(Math.max((offset / span) * 100, 0), 100)
 }
