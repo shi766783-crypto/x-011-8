@@ -17,6 +17,16 @@ export interface StudyResource {
   link: string
 }
 
+/** 计划里程碑：把总目标拆成的阶段节点，可单独标记完成 */
+export interface PlanMilestone {
+  id: string
+  title: string
+  /** YYYY-MM-DD，用于在计划进度条上定位 */
+  date: string
+  /** 完成时间；为空表示未完成 */
+  completedAt?: string
+}
+
 /** 学习计划 */
 export interface StudyPlan {
   id: string
@@ -31,6 +41,8 @@ export interface StudyPlan {
   /** 每日学习时长（小时） */
   dailyHours: number
   resources: StudyResource[]
+  /** 阶段里程碑，随计划一并创建/删除 */
+  milestones: PlanMilestone[]
   createdAt: string
   /** 手动标记完成的时间；为空表示未手动完成 */
   completedAt?: string

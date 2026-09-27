@@ -51,3 +51,15 @@ export function computePlanProgress(plan: StudyPlan, logs: StudyLog[]): PlanProg
 export function isPlanCompleted(plan: StudyPlan, logs: StudyLog[]): boolean {
   return computePlanProgress(plan, logs).status === '已完成'
 }
+
+/**
+ * 里程碑在计划进度条上的位置（0-100 的百分比，纯函数）。
+ * 按里程碑日期在 [开始日期, 结束日期] 区间中的相对位置计算，越界时钳制到两端。
+ * 仅用于可视化定位，不参与时长进度算法。
+ */
+export function milestonePositionPercent(plan: StudyPlan, date: string): number {
+  const totalDays = Math.max(daysBetween(plan.startDate, plan.endDate), 0)
+  if (totalDays === 0) return 100
+  const offset = daysBetween(plan.startDate, date)
+  return Math.min(Math.max((offset / totalDays) * 100, 0), 100)
+}
